@@ -28,11 +28,6 @@ vi.mock('@/i18n/i18n', () => ({ translate: (_key: string, fallback: string) => f
 vi.mock('../terminal-pane/terminal-clipboard-paste', () => ({
   pasteTerminalClipboard: mocks.terminalClipboard
 }))
-vi.mock('../terminal-pane/terminal-clipboard-event-paste', () => ({
-  isClipboardEventPasteRequired: () => false,
-  firesNativePasteEvent: () => true,
-  getClipboardEventText: (event: ClipboardEvent) => event.clipboardData?.getData('text/plain') ?? ''
-}))
 
 const REFUSAL = "Can't paste — this chat isn't accepting input right now."
 
@@ -148,7 +143,12 @@ function Cover({
     : null
 }
 
-function fixture(options: { platform?: NodeJS.Platform } = {}) {
+function fixture(
+  options: {
+    platform?: NodeJS.Platform
+    keybindings?: TerminalPaneCloseController['keybindings']
+  } = {}
+) {
   const container = document.createElement('div')
   const pane = terminalPane(1)
   const sibling = terminalPane(2)
@@ -160,7 +160,7 @@ function fixture(options: { platform?: NodeJS.Platform } = {}) {
   // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: the listeners use only these controller fields.
   const controller = {
     forceBracketedMultilineTextPaste: false,
-    keybindings: {},
+    keybindings: options.keybindings ?? {},
     worktreeId: 'workspace',
     managerRef: { current: { getActivePane: () => pane, getPanes: () => [pane, sibling] } },
     paneTransportsRef: { current: new Map() },
@@ -316,6 +316,25 @@ describe('a chat cover owns focus over its terminal', () => {
 })
 
 describe('paste inside a chat cover never reaches the terminal', () => {
+  it('keeps custom terminal paste shortcuts on the clipboard execution path', () => {
+    const f = fixture({ platform: 'linux', keybindings: { 'terminal.paste': ['Ctrl+Shift+P'] } })
+    const event = new KeyboardEvent('keydown', {
+      key: 'P',
+      code: 'KeyP',
+      ctrlKey: true,
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true
+    })
+    f.pane.helper.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(true)
+    expect(f.pasteFromClipboard).toHaveBeenCalledExactlyOnceWith(f.pane, 'keyboard')
+  })
+  it('keeps image-only native terminal paste on the clipboard fallback', () => {
+    const f = fixture()
+    expect(paste(f.pane.helper, '').defaultPrevented).toBe(true)
+    expect(f.pasteFromClipboard).toHaveBeenCalledExactlyOnceWith(f.pane, 'paste-event')
+  })
   it.each(['darwin', 'win32', 'linux'] as const)(
     'refuses a %s paste before the chat has mounted any input',
     (platform) => {
@@ -410,15 +429,46 @@ describe('paste inside a chat cover never reaches the terminal', () => {
     expect(mocks.error).not.toHaveBeenCalled()
   })
 
-  it('keeps terminal-only paste unchanged', () => {
+  it('uses native terminal paste text without rereading the clipboard', async () => {
     const f = fixture()
     paste(f.pane.helper)
-    expect(f.pasteFromClipboard).toHaveBeenCalledExactlyOnceWith(f.pane, 'paste-event')
+    expect(f.pasteFromClipboard).toHaveBeenCalledExactlyOnceWith(
+      f.pane,
+      'paste-event',
+      expect.any(Function)
+    )
+    const readEventText = f.pasteFromClipboard.mock.calls[0][2]
+    expect(await readEventText({ maxBytes: 100 })).toBe('event text')
+    expect(mocks.readClipboardText).not.toHaveBeenCalled()
     window.dispatchEvent(new Event(APP_MENU_PASTE_EVENT, { cancelable: true }))
     expect(mocks.terminalClipboard).toHaveBeenCalledTimes(1)
     expect(mocks.terminalClipboard.mock.calls[0][0].protectedMultilineTextPasteOptions).toBe(
       undefined
     )
+  })
+  it.each(['darwin', 'linux', 'win32'] as const)('waits for one native paste on %s', (platform) => {
+    const f = fixture({ platform })
+    const keydown = new KeyboardEvent('keydown', {
+      key: 'v',
+      code: 'KeyV',
+      metaKey: platform === 'darwin',
+      ctrlKey: platform !== 'darwin',
+      bubbles: true,
+      cancelable: true
+    })
+    f.pane.helper.dispatchEvent(keydown)
+    expect(keydown.defaultPrevented).toBe(false)
+    expect(f.pasteFromClipboard).not.toHaveBeenCalled()
+    expect(paste(f.pane.helper).defaultPrevented).toBe(true)
+    expect(f.pasteFromClipboard).toHaveBeenCalledTimes(1)
+  })
+  it('leaves an ordinary input inside the terminal container to native paste', () => {
+    const f = fixture()
+    const input = document.createElement('input')
+    f.pane.container.append(input)
+    input.focus()
+    expect(paste(input).defaultPrevented).toBe(false)
+    expect(f.pasteFromClipboard).not.toHaveBeenCalled()
   })
 })
 

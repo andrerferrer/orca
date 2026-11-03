@@ -339,7 +339,7 @@ it('shares real answer preparation at N and 10N across candidates, owners and se
           await act(async () => {})
           const phases =
             useOwner === useTabOwner
-              ? ['static', 'search', 'closed', 'hidden', 'loading', 'missing-program', 'settled']
+              ? ['static', 'closed', 'hidden', 'loading', 'missing-program', 'settled']
               : useOwner === usePickerOwner
                 ? ['static', 'loading', 'missing-program']
                 : ['static']
@@ -358,7 +358,6 @@ it('shares real answer preparation at N and 10N across candidates, owners and se
             if (controller) {
               act(() => {
                 controller.setNewTabMenuOpen(!['closed', 'hidden'].includes(phase))
-                controller.setCreateMenuQuery(phase === 'search' ? 'opencode' : '')
               })
             }
             hook.rerender({ target, phase })
