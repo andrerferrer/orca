@@ -98,5 +98,6 @@ describe('Connections settings', () => {
     expect(JSON.stringify(renderer.toJSON())).toContain(
       'Your phone may suspend the connection sooner'
     )
+    expect(JSON.stringify(renderer.toJSON())).toContain('up to 30 minutes')
   })
 })

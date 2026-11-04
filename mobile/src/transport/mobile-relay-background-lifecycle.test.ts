@@ -38,14 +38,34 @@ describe('mobile Relay background lifecycle', () => {
     supervisor.stop()
   })
 
-  it('releases an opted-in relay at five minutes without reconnecting in the background', async () => {
+  // Distinguishes old 5min expiry and never-expire: still healthy past 5min and at 29:59.
+  it('keeps an opted-in relay connected beyond five minutes and through 29:59', async () => {
     const logical = new FakeLogicalClient('connected', 'relay')
     const deps = { ...dependencies(), extendBackgroundGrace: () => true }
     const supervisor = new MobileEndpointSupervisor(logical, host.id, relay, deps)
     await supervisor.start()
 
     supervisor.setForeground(false)
-    await vi.advanceTimersByTimeAsync(299_999)
+    await vi.advanceTimersByTimeAsync(360_000)
+    expect(logical.getState()).toBe('connected')
+    expect(logical.suspendActiveSession).not.toHaveBeenCalled()
+    expect(deps.openRelay).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(1_799_000 - 360_000)
+    expect(logical.getState()).toBe('connected')
+    expect(logical.suspendActiveSession).not.toHaveBeenCalled()
+    expect(deps.openRelay).not.toHaveBeenCalled()
+    supervisor.stop()
+  })
+
+  it('releases an opted-in relay at thirty minutes without reconnecting in the background', async () => {
+    const logical = new FakeLogicalClient('connected', 'relay')
+    const deps = { ...dependencies(), extendBackgroundGrace: () => true }
+    const supervisor = new MobileEndpointSupervisor(logical, host.id, relay, deps)
+    await supervisor.start()
+
+    supervisor.setForeground(false)
+    await vi.advanceTimersByTimeAsync(1_799_999)
     expect(logical.suspendActiveSession).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(1)
     expect(logical.getState()).toBe('disconnected')
@@ -79,14 +99,30 @@ describe('mobile Relay background lifecycle', () => {
     supervisor.stop()
   })
 
-  it('expires an opted-in relay on resume after a frozen background timer', async () => {
+  // Distinguishes a frozen deadline still pinned to 5min: six wall-clock minutes must not expire.
+  it('keeps an opted-in relay on resume after a frozen six-minute gap', async () => {
     const logical = new FakeLogicalClient('connected', 'relay')
     const deps = { ...dependencies(), extendBackgroundGrace: () => true }
     const supervisor = new MobileEndpointSupervisor(logical, host.id, relay, deps)
     await supervisor.start()
 
     supervisor.setForeground(false)
-    vi.setSystemTime(Date.now() + 300_000)
+    vi.setSystemTime(Date.now() + 360_000)
+    supervisor.setForeground(true)
+    expect(logical.suspendActiveSession).not.toHaveBeenCalled()
+    expect(deps.openRelay).not.toHaveBeenCalled()
+    expect(logical.getState()).toBe('connected')
+    supervisor.stop()
+  })
+
+  it('expires an opted-in relay on resume after a frozen thirty-minute background timer', async () => {
+    const logical = new FakeLogicalClient('connected', 'relay')
+    const deps = { ...dependencies(), extendBackgroundGrace: () => true }
+    const supervisor = new MobileEndpointSupervisor(logical, host.id, relay, deps)
+    await supervisor.start()
+
+    supervisor.setForeground(false)
+    vi.setSystemTime(Date.now() + 1_800_000)
     supervisor.setForeground(true)
     expect(logical.suspendActiveSession).toHaveBeenCalledOnce()
     await vi.waitFor(() => expect(deps.openRelay).toHaveBeenCalledOnce())
