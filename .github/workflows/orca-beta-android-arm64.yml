@@ -4,6 +4,11 @@ name: Orca Beta Android ARM64 (fork artifact)
 # Does NOT publish releases, does NOT use signing secrets, does NOT run on
 # stablyai/orca. Trigger is the exact beta branch name so official
 # mobile-android-v* / main / PR pipelines stay untouched.
+#
+# android/ is gitignored: this job runs a fresh `expo prebuild` and uses the
+# generated template signing (debug / unsigned-style release). Do not expect
+# the Mac-only signingConfigs.beta patch. Personal re-sign happens locally
+# after downloading the artifact.
 on:
   push:
     branches:
@@ -28,10 +33,10 @@ jobs:
         working-directory: mobile
 
     env:
-      # Cap JS / native fan-out on the hosted runner (public ubuntu-latest).
+      # Hosted ubuntu-latest limits we actually set (Gradle workers / JVM / Node).
+      # Do not claim a Ninja/clang job cap here — env-only Ninja caps were refuted
+      # on the Mac (12× clang++). Public runners are typically ~4 CPUs.
       NODE_OPTIONS: --max-old-space-size=4096
-      CMAKE_BUILD_PARALLEL_LEVEL: '2'
-      NINJA_NUM_JOBS: '2'
       ORG_GRADLE_PROJECT_reactNativeArchitectures: arm64-v8a
 
     steps:
@@ -49,8 +54,6 @@ jobs:
 
       - name: Install JS dependencies (frozen)
         # Root install: mobile prebuild resolves workspace packages from the monorepo.
-        # Same shape as mobile-android-release.yml (working-directory defaults to mobile
-        # for other steps; install must run at the workspace root).
         working-directory: .
         run: pnpm install --frozen-lockfile
 
@@ -70,8 +73,7 @@ jobs:
             "platforms;android-36" \
             "build-tools;36.0.0" \
             "ndk;27.1.12297006"
-          # Prove the pin the build will see.
-          sdkmanager --list_installed | tee "$RUNNER_TEMP/sdk-installed.txt"
+          sdkmanager --list_installed > "$RUNNER_TEMP/sdk-installed.txt"
           grep -F 'ndk;27.1.12297006' "$RUNNER_TEMP/sdk-installed.txt"
           grep -F 'build-tools;36.0.0' "$RUNNER_TEMP/sdk-installed.txt"
           grep -F 'platforms;android-36' "$RUNNER_TEMP/sdk-installed.txt"
@@ -79,7 +81,20 @@ jobs:
       - name: Expo prebuild (android, no install)
         # app.json has no googleServicesFile (personal package; remote FCM stays off).
         # Identity already in source: com.andrerferrer.orca.beta / versionCode 27 / 0.0.62.
+        # Fresh android/ from the template — not the Mac gitignored tree.
         run: npx expo prebuild --platform android --no-install
+
+      - name: Confirm generated signing (no beta keystore assumption)
+        run: |
+          set -euo pipefail
+          # Fresh prebuild must not reference the Mac-only ORCA_BETA / signingConfigs.beta patch.
+          if grep -n 'signingConfigs\.beta\|ORCA_BETA_STORE_FILE' android/app/build.gradle; then
+            echo "Fresh prebuild unexpectedly contains beta signing patch" >&2
+            exit 1
+          fi
+          # Expo template release builds typically map to signingConfigs.debug when
+          # no credentials are configured — that is the CI artifact we re-sign locally.
+          grep -n 'signingConfig' android/app/build.gradle || true
 
       - name: Pin Gradle workers + ARM64-only architectures
         run: |
@@ -102,35 +117,7 @@ jobs:
           fi
           grep -E '^(reactNativeArchitectures|org.gradle.workers.max|org.gradle.jvmargs)=' "$props"
 
-      - name: Use debug signing for CI release APK (no secrets)
-        # Personal ORCA_BETA keystore never leaves the Mac. CI produces a
-        # debug-signed release APK; local apksigner re-signs to the beta cert.
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path('android/app/build.gradle')
-          text = path.read_text()
-          old = 'signingConfig signingConfigs.beta'
-          new = 'signingConfig signingConfigs.debug'
-          if old not in text:
-              raise SystemExit('expected release beta signingConfig mapping missing')
-          path.write_text(text.replace(old, new, 1))
-          print('release buildType now uses signingConfigs.debug for CI artifact')
-          PY
-
-      - name: Prove native job cap wiring before Gradle
-        run: |
-          set -euo pipefail
-          echo "CMAKE_BUILD_PARALLEL_LEVEL=${CMAKE_BUILD_PARALLEL_LEVEL}"
-          echo "NINJA_NUM_JOBS=${NINJA_NUM_JOBS}"
-          test "$CMAKE_BUILD_PARALLEL_LEVEL" = "2"
-          test "$NINJA_NUM_JOBS" = "2"
-          # Also pass -j2 through common CMake/ninja env used by AGP externalNativeBuild.
-          echo "ANDROID_NDK_HOME=${ANDROID_NDK_HOME:-}"
-          echo "ANDROID_HOME=${ANDROID_HOME:-}"
-
-      - name: Build ARM64 assembleRelease (debug-signed, no daemon)
+      - name: Build ARM64 assembleRelease (template signing, no daemon)
         run: |
           set -euo pipefail
           cd android
@@ -140,7 +127,7 @@ jobs:
             -Dorg.gradle.parallel=false \
             -PreactNativeArchitectures=arm64-v8a
 
-      - name: Checksum APK + record identity hints
+      - name: Checksum APK + assert package / versionCode / ABI / bundle
         id: apk
         run: |
           set -euo pipefail
@@ -161,20 +148,27 @@ jobs:
             echo "sha256=$sha256"
           } >> "$GITHUB_OUTPUT"
           echo "CI APK $bytes bytes sha256=$sha256"
-          # Best-effort aapt dump when build-tools are on PATH.
-          if command -v aapt >/dev/null 2>&1; then
-            aapt dump badging "$apk" | tee "$RUNNER_TEMP/aapt-badging.txt" | head -20
-          else
-            AAPT="$(ls -d "$ANDROID_HOME"/build-tools/36.0.0/aapt 2>/dev/null || true)"
-            if [ -n "$AAPT" ]; then
-              "$AAPT" dump badging "$apk" | tee "$RUNNER_TEMP/aapt-badging.txt" | head -20
-            fi
+
+          AAPT="$(command -v aapt || true)"
+          if [ -z "$AAPT" ]; then
+            AAPT="$ANDROID_HOME/build-tools/36.0.0/aapt"
           fi
+          test -x "$AAPT"
+          # Write the full dump first — never aapt|tee|head under pipefail (head closes the pipe).
+          "$AAPT" dump badging "$apk" > "$RUNNER_TEMP/aapt-badging.txt"
+          head -n 40 "$RUNNER_TEMP/aapt-badging.txt"
+
+          grep -F "package: name='com.andrerferrer.orca.beta'" "$RUNNER_TEMP/aapt-badging.txt"
+          grep -E "versionCode='27'" "$RUNNER_TEMP/aapt-badging.txt"
+          grep -E "native-code:.*'arm64-v8a'" "$RUNNER_TEMP/aapt-badging.txt"
+          # Embedded release JS bundle (Metro not required at runtime).
+          unzip -l "$apk" > "$RUNNER_TEMP/apk-listing.txt"
+          grep -E 'assets/index\.android\.bundle' "$RUNNER_TEMP/apk-listing.txt"
 
       - name: Upload APK artifact (no release, no secrets)
         uses: actions/upload-artifact@v7
         with:
-          name: orca-beta-relay-30min-arm64-debugsigned
+          name: orca-beta-relay-30min-arm64-ci
           path: |
             mobile/android/app/build/outputs/apk/release/*.apk
             mobile/android/app/build/outputs/apk/release/*.apk.sha256
