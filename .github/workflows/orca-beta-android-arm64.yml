@@ -24,7 +24,8 @@ concurrency:
 
 jobs:
   android-arm64-artifact:
-    if: github.repository == 'andrerferrer/orca'
+    # Exact fork + exact branch (covers workflow_dispatch as well as push).
+    if: github.repository == 'andrerferrer/orca' && github.ref == 'refs/heads/andrerferrer/android-beta-30min'
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
@@ -52,9 +53,15 @@ jobs:
       - name: Setup pnpm (repo pin + integrity)
         uses: ./.github/actions/setup-pnpm
 
-      - name: Install JS dependencies (frozen)
-        # Root install: mobile prebuild resolves workspace packages from the monorepo.
+      - name: Install root JS dependencies (frozen)
+        # Root workspace excludes mobile's own lockfile; still needed for shared packages.
         working-directory: .
+        run: pnpm install --frozen-lockfile
+
+      - name: Install mobile JS dependencies (frozen)
+        # mobile/ has its own pnpm-workspace.yaml + lockfile (Expo/RN). Match
+        # mobile-android-release.yml: install under mobile before prebuild.
+        working-directory: mobile
         run: pnpm install --frozen-lockfile
 
       - name: Setup JDK 17
@@ -82,7 +89,8 @@ jobs:
         # app.json has no googleServicesFile (personal package; remote FCM stays off).
         # Identity already in source: com.andrerferrer.orca.beta / versionCode 27 / 0.0.62.
         # Fresh android/ from the template — not the Mac gitignored tree.
-        run: npx expo prebuild --platform android --no-install
+        # Use the Expo from mobile's frozen lockfile (pnpm exec), not npx fetch.
+        run: pnpm exec expo prebuild --platform android --no-install
 
       - name: Confirm generated signing (no beta keystore assumption)
         run: |
