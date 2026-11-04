@@ -68,7 +68,7 @@ export default function ConnectionSettingsScreen({ onBack }: { onBack?: () => vo
         first
         footer={t(
           'settings.connectionSettingsScreen.backgroundDescription',
-          'Keep an existing Relay connection for up to 5 minutes instead of 30 seconds when you switch apps. Your phone may suspend the connection sooner. This can use more battery and mobile data. Applies the next time Orca goes into the background.'
+          'Keep an existing Relay connection for up to 30 minutes instead of 30 seconds when you switch apps. Your phone may suspend the connection sooner. This can use more battery and mobile data. Applies the next time Orca goes into the background.'
         )}
       >
         <ListRow

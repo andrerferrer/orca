@@ -1,11 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  EXTENDED_RELAY_BACKGROUND_GRACE_MS,
   MobileRelayBackgroundGraceTimer,
   RELAY_BACKGROUND_GRACE_MS
 } from './mobile-relay-background-grace'
-
-// Expected extended retention after the 30min policy change (currently still 5min in product).
-const EXPECTED_EXTENDED_RELAY_BACKGROUND_GRACE_MS = 1_800_000
 
 describe('MobileRelayBackgroundGraceTimer', () => {
   afterEach(() => vi.useRealTimers())
@@ -47,13 +45,14 @@ describe('MobileRelayBackgroundGraceTimer', () => {
     )
 
     timer.arm()
+    expect(EXTENDED_RELAY_BACKGROUND_GRACE_MS).toBe(1_800_000)
     await vi.advanceTimersByTimeAsync(360_000)
     expect(onExpired).not.toHaveBeenCalled()
-    await vi.advanceTimersByTimeAsync(EXPECTED_EXTENDED_RELAY_BACKGROUND_GRACE_MS - 360_000 - 1)
+    await vi.advanceTimersByTimeAsync(EXTENDED_RELAY_BACKGROUND_GRACE_MS - 360_000 - 1)
     expect(onExpired).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(1)
     expect(onExpired).toHaveBeenCalledOnce()
-    await vi.advanceTimersByTimeAsync(EXPECTED_EXTENDED_RELAY_BACKGROUND_GRACE_MS)
+    await vi.advanceTimersByTimeAsync(EXTENDED_RELAY_BACKGROUND_GRACE_MS)
     expect(onExpired).toHaveBeenCalledOnce()
   })
 

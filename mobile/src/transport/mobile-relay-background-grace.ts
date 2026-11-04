@@ -4,7 +4,7 @@ import type { ScheduleTimer } from './timer-scheduler'
 
 // Retain a healthy Relay briefly across routine app switches without waking the app.
 export const RELAY_BACKGROUND_GRACE_MS = 30_000
-const EXTENDED_RELAY_BACKGROUND_GRACE_MS = 300_000
+export const EXTENDED_RELAY_BACKGROUND_GRACE_MS = 1_800_000
 
 type RelayBackgroundGraceDependencies = {
   now: () => number
