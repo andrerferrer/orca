@@ -3,7 +3,7 @@
   "slug": "orca-mobile-beta",
   "scheme": "orca-beta",
   "androidPackage": "com.andrerferrer.orca.beta",
-  "versionCode": 28,
+  "versionCode": 29,
   "adaptiveIconBackgroundColor": "#5B21B6",
   "icon": "./assets/beta/icon.png",
   "adaptiveIconForeground": "./assets/beta/adaptive-icon.png",
