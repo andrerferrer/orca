@@ -7,5 +7,7 @@
   "adaptiveIconBackgroundColor": "#5B21B6",
   "icon": "./assets/beta/icon.png",
   "adaptiveIconForeground": "./assets/beta/adaptive-icon.png",
-  "notificationIcon": "./assets/beta/notification-icon.png"
+  "notificationIcon": "./assets/beta/notification-icon.png",
+  "releasesRepo": "andrerferrer/orca",
+  "releaseTagPrefix": "beta-relay-"
 }

@@ -15,6 +15,14 @@ function withOrcaBeta(config) {
     slug: identity.slug,
     scheme: identity.scheme,
     icon: identity.icon,
+    extra: {
+      ...config.extra,
+      orcaBeta: {
+        versionCode: identity.versionCode,
+        releasesRepo: identity.releasesRepo,
+        releaseTagPrefix: identity.releaseTagPrefix
+      }
+    },
     android: {
       ...android,
       package: identity.androidPackage,

@@ -1,0 +1,83 @@
+[
+  {
+    "tag_name": "beta-relay-30min-20261105",
+    "draft": false,
+    "prerelease": true,
+    "html_url": "https://github.com/andrerferrer/orca/releases/tag/beta-relay-30min-20261105",
+    "assets": [
+      {
+        "name": "INSTALACAO.md"
+      },
+      {
+        "name": "INSTALL.md"
+      },
+      {
+        "name": "LICENSE"
+      },
+      {
+        "name": "Orca-Beta-relay-30min-v28.apk"
+      },
+      {
+        "name": "Orca-Beta-relay-30min-v28.apk.sha256"
+      },
+      {
+        "name": "packaging.diff"
+      },
+      {
+        "name": "SOURCE-TRACE.md"
+      }
+    ]
+  },
+  {
+    "tag_name": "beta-relay-30min-20261103",
+    "draft": false,
+    "prerelease": true,
+    "html_url": "https://github.com/andrerferrer/orca/releases/tag/beta-relay-30min-20261103",
+    "assets": [
+      {
+        "name": "INSTALACAO.md"
+      },
+      {
+        "name": "INSTALL.md"
+      },
+      {
+        "name": "LICENSE"
+      },
+      {
+        "name": "Orca-Beta-relay-30min-v27.apk"
+      },
+      {
+        "name": "Orca-Beta-relay-30min-v27.apk.sha256"
+      },
+      {
+        "name": "packaging.diff"
+      },
+      {
+        "name": "SOURCE-TRACE.md"
+      }
+    ]
+  },
+  {
+    "tag_name": "beta-relay-20261103",
+    "draft": false,
+    "prerelease": true,
+    "html_url": "https://github.com/andrerferrer/orca/releases/tag/beta-relay-20261103",
+    "assets": [
+      {
+        "name": "INSTALACAO.md"
+      },
+      {
+        "name": "LICENSE"
+      },
+      {
+        "name": "Orca-Beta-relay-d03be01c.apk"
+      },
+      {
+        "name": "Orca-Beta-relay-d03be01c.apk.sha256"
+      },
+      {
+        "name": "packaging.diff"
+      }
+    ]
+  }
+]

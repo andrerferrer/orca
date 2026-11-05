@@ -30,6 +30,7 @@ export function undismissedAppUpdate(state: AppUpdateState): KnownAppUpdate | nu
 export type AppUpdateCheckerDeps = {
   source: AppUpdateSource | null
   installedVersion: string | null
+  isNewerVersion?: (candidate: string, installed: string) => boolean
   now: () => number
   setTimer: (run: () => void, delayMs: number) => TimerHandle
   clearTimer: (handle: TimerHandle) => void
@@ -54,7 +55,7 @@ export function createAppUpdateChecker(deps: AppUpdateCheckerDeps) {
     const available =
       latest &&
       deps.installedVersion &&
-      isNewerReleaseVersion(latest.version, deps.installedVersion)
+      (deps.isNewerVersion ?? isNewerReleaseVersion)(latest.version, deps.installedVersion)
         ? latest
         : null
     return {

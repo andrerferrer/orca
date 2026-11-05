@@ -10,6 +10,12 @@ import {
 import { appStoreUpdateSource } from './app-store-update-source'
 import { createAppUpdateChecker, type AppUpdateState } from './app-update-checker'
 import type { AppUpdateSource } from './app-update-source'
+import {
+  betaVersionLabel,
+  createBetaReleaseUpdateSource,
+  isNewerBetaVersion,
+  orcaBetaUpdateConfig
+} from './beta-release-update-source'
 import { githubReleaseUpdateSource } from './github-release-update-source'
 
 // expoConfig is embedded binary manifest because app does not use expo-updates; SDK 55 removed nativeAppVersion. Revisit version source if adopting OTA updates.
@@ -26,9 +32,17 @@ function resolveAppUpdateSource(): AppUpdateSource | null {
   return null
 }
 
+const orcaBeta =
+  Platform.OS === 'android' ? orcaBetaUpdateConfig(Constants.expoConfig?.extra) : null
+
 export const appUpdateChecker = createAppUpdateChecker({
-  source: resolveAppUpdateSource(),
-  installedVersion: installedAppVersion,
+  ...(orcaBeta
+    ? {
+        source: createBetaReleaseUpdateSource((input, init) => fetch(input, init), orcaBeta),
+        installedVersion: betaVersionLabel(orcaBeta.versionCode),
+        isNewerVersion: isNewerBetaVersion
+      }
+    : { source: resolveAppUpdateSource(), installedVersion: installedAppVersion }),
   now: () => Date.now(),
   setTimer: (run, delayMs) => setTimeout(run, delayMs),
   clearTimer: (handle) => clearTimeout(handle),
