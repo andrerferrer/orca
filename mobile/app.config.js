@@ -25,3 +25,7 @@ module.exports = ({ config }) => ({
       : plugin
   )
 })
+
+const { withOrcaBeta } = require('./beta/with-orca-beta.cjs')
+const upstreamConfig = module.exports
+module.exports = (context) => withOrcaBeta(upstreamConfig(context))

@@ -25,21 +25,19 @@ Needs ImageMagick `magick`. From this directory:
 ```
 
 That writes rasters under `png/` (local output; not required in git). Then copy
-the three active files into Expo assets:
+the three active files next to this README:
 
 ```sh
-cp png/icon.png ../icon.png
-cp png/adaptive-icon.png ../adaptive-icon.png
-cp png/notification-icon.png ../notification-icon.png
+cp png/icon.png png/adaptive-icon.png png/notification-icon.png .
 ```
 
-Those three paths are what the app uses:
+`mobile/beta/orca-beta.json` points the `ORCA_BETA=1` build at them:
 
-- `../icon.png` — Expo `expo.icon`
-- `../adaptive-icon.png` — Expo `android.adaptiveIcon.foregroundImage`
-- `../notification-icon.png` — `app.config.js` expo-notifications plugin `icon`
+- `icon.png` — Expo `expo.icon`
+- `adaptive-icon.png` — Expo `android.adaptiveIcon.foregroundImage`
+- `notification-icon.png` — expo-notifications plugin `icon`
 
-Adaptive mask bleed color in `app.json`: `#5B21B6`.
+Adaptive mask bleed color: `#5B21B6` (`adaptiveIconBackgroundColor`).
 
 See `INTEGRATION.md` for the mapping table. No feature-logic change; identity
-stays `com.andrerferrer.orca.beta` / versionCode 27 / `0.0.62`.
+stays `com.andrerferrer.orca.beta`; versionCode lives in `mobile/beta/orca-beta.json`.

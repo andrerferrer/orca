@@ -39,6 +39,8 @@ jobs:
       # on the Mac (12× clang++). Public runners are typically ~4 CPUs.
       NODE_OPTIONS: --max-old-space-size=4096
       ORG_GRADLE_PROJECT_reactNativeArchitectures: arm64-v8a
+      # mobile/beta/with-orca-beta.cjs applies the Beta identity only under this flag.
+      ORCA_BETA: '1'
 
     steps:
       - name: Checkout
@@ -91,8 +93,8 @@ jobs:
           grep -F 'platforms;android-36' "$RUNNER_TEMP/sdk-installed.txt"
 
       - name: Expo prebuild (android, no install)
-        # app.json has no googleServicesFile (personal package; remote FCM stays off).
-        # Identity already in source: com.andrerferrer.orca.beta / versionCode 27 / 0.0.62.
+        # ORCA_BETA=1: identity from mobile/beta/orca-beta.json (package, versionCode, icons),
+        # googleServicesFile dropped (personal package; remote FCM stays off).
         # Fresh android/ from the template — not the Mac gitignored tree.
         # Use the Expo from mobile's frozen lockfile (pnpm exec), not npx fetch.
         run: pnpm exec expo prebuild --platform android --no-install
@@ -172,7 +174,8 @@ jobs:
           head -n 40 "$RUNNER_TEMP/aapt-badging.txt"
 
           grep -F "package: name='com.andrerferrer.orca.beta'" "$RUNNER_TEMP/aapt-badging.txt"
-          grep -E "versionCode='27'" "$RUNNER_TEMP/aapt-badging.txt"
+          version_code="$(node -p "require('./beta/orca-beta.json').versionCode")"
+          grep -E "versionCode='${version_code}'" "$RUNNER_TEMP/aapt-badging.txt"
           grep -E "native-code:.*'arm64-v8a'" "$RUNNER_TEMP/aapt-badging.txt"
           # Embedded release JS bundle (Metro not required at runtime).
           unzip -l "$apk" > "$RUNNER_TEMP/apk-listing.txt"
