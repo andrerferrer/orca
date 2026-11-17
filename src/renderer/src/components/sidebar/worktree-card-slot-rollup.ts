@@ -1,6 +1,6 @@
 import { getResolvedExecutionHostIdForWorktree } from '@/lib/workspace/ownership/resolved-worktree-execution-host'
 import { createLineageSlotReader, type WorkspaceSlot } from './worktree-card-slot-range'
-import type { DashboardAgentRow } from '@/components/dashboard/useDashboardData'
+import type { DashboardAgentRow } from '@/components/dashboard/rows/dashboard-agent-row'
 import { selectWorktreesByRepo } from '@/store/workspaces/catalog/workspace-record-fields'
 import {
   toLineageSlotRecord,
@@ -14,7 +14,7 @@ import { useAppStore } from '@/store'
 import type { AppState } from '@/store/types'
 import { getIndexedWorktreesById } from '@/store/slices/worktrees/listing/worktree-catalog-index'
 import type { Worktree } from '../../../../shared/worktree/types'
-import type { ExecutionHostId } from '../../../../shared/execution-host'
+import type { ExecutionHostId } from '../../../../shared/execution-host/execution-host'
 import {
   getWorktreeHostIdentity,
   getWorktreeIdFromHostIdentity,

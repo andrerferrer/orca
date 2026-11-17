@@ -2,7 +2,7 @@ import { createElement } from 'react'
 import { act, create, type ReactTestRenderer } from 'react-test-renderer'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ConnectionSettingsScreen from './connection-settings-screen'
-import { MobileSwitch } from '../components/MobileSwitch'
+import { MobileSwitch } from '../components/controls/MobileSwitch'
 import { SettingsNote } from './settings-screen-frame'
 import {
   isRelayBackgroundExtended,
@@ -18,7 +18,7 @@ vi.mock(
   '../components/list/ListGroup',
   async () => (await import('../test-support/settings-chrome-test-double')).listGroupDouble
 )
-vi.mock('../components/MobileSwitch', () => ({ MobileSwitch: 'Switch' }))
+vi.mock('../components/controls/MobileSwitch', () => ({ MobileSwitch: 'Switch' }))
 vi.mock('expo-router', () => ({ useRouter: () => ({ back() {} }) }))
 vi.mock('../theme/use-mobile-color-scheme', () => ({ useMobileColorScheme: () => 'dark' }))
 vi.mock('../i18n/use-mobile-translation', () => ({

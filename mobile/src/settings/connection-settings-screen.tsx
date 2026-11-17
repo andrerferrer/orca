@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'expo-router'
 import { ListRow } from '../components/list/ListGroup'
-import { MobileSwitch } from '../components/MobileSwitch'
+import { MobileSwitch } from '../components/controls/MobileSwitch'
 import { useMobileTranslation } from '../i18n/use-mobile-translation'
 import {
   isRelayBackgroundExtended,

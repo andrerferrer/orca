@@ -101,7 +101,7 @@ describe('Beta version compare', () => {
   it('keeps a stored Beta update available to the checker', () => {
     const latest = { version: 'Beta v29', url: 'https://example.test/v29' }
     const checker = createAppUpdateChecker({
-      source: null,
+      source: { check: () => new Promise(() => {}) },
       installedVersion: betaVersionLabel(28),
       isNewerVersion: isNewerBetaVersion,
       now: () => 0,

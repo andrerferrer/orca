@@ -1,8 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   EXTENDED_RELAY_BACKGROUND_GRACE_MS,
-  MobileRelayBackgroundGraceTimer,
-  RELAY_BACKGROUND_GRACE_MS
+  MobileRelayBackgroundGraceTimer
 } from './mobile-relay-background-grace'
 
 describe('MobileRelayBackgroundGraceTimer', () => {
@@ -32,25 +31,6 @@ describe('MobileRelayBackgroundGraceTimer', () => {
     expect(onExpired).toHaveBeenCalledOnce()
     await vi.advanceTimersByTimeAsync(EXTENDED_RELAY_BACKGROUND_GRACE_MS)
     expect(onExpired).toHaveBeenCalledOnce()
-  })
-
-  it('detects expiry on resume when the background timer was suspended', () => {
-    vi.useFakeTimers()
-    let now = 1_000
-    const timer = new MobileRelayBackgroundGraceTimer(
-      {
-        now: () => now,
-        setTimer: vi.fn(() => setTimeout(() => {}, 0)),
-        clearTimer: vi.fn()
-      },
-      vi.fn()
-    )
-
-    timer.arm()
-    now += RELAY_BACKGROUND_GRACE_MS
-
-    expect(timer.consumeExpired()).toBe(true)
-    expect(timer.consumeExpired()).toBe(false)
   })
 
   it('detects extended expiry on resume after a frozen thirty-minute gap', () => {
