@@ -7,7 +7,7 @@ import { nameLinkedPlace } from './external-conversation-place'
 import { isBotAgent } from '../../shared/bot-types'
 import {
   type ConversationChatHost,
-  runningTurnOpenedByConversationReport,
+  chatTurnFacts,
   watchChatNews
 } from './external-conversation-chat'
 import { answerConversation } from './external-conversation-answer'
@@ -143,10 +143,7 @@ export class ExternalConversationSeam {
   }
 
   private turnFacts(chats: ConversationChatHost | undefined) {
-    return {
-      delivered: (sessionId: string) => this.chatDeliveries.pending(sessionId),
-      reported: (sessionId: string) => runningTurnOpenedByConversationReport(chats, sessionId)
-    }
+    return chatTurnFacts(chats, this.deps.store, (id) => this.chatDeliveries.pending(id))
   }
 
   /** Null unless a watch runs (replies need the connector) and the chat is linked. */
@@ -308,9 +305,17 @@ export class ExternalConversationSeam {
     signal: AbortSignal
   ): Promise<Delivery> {
     this.linked.set(conversationId(key), { key, worktreeId: chat.worktreeId })
+    // A bot's request may list images; they go with its words, so the agent sees them at once.
+    const images =
+      chat.bot && message.asker && this.deps.askerImages
+        ? await this.deps
+            .askerImages({ botId: chat.bot.botId, conversation: key, asker: message.asker, signal })
+            .catch(() => [])
+        : []
     const delivered = await this.chatDeliveries.deliver(host.chat, key, chat, {
       ...message,
-      signal
+      signal,
+      ...(images.length > 0 ? { images } : {})
     })
     // Its outbox row may have committed even when the send was then rejected: watch from now on.
     if (message.reply) {

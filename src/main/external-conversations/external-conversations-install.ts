@@ -1,3 +1,4 @@
+import { setConnectorClaimSource } from '../native-chat/agent-session-wire/recovery/structured-agent-session-connector-claims'
 import type { AgentTransitionDetector } from '../agent-hooks/observations/agent-transition-detector'
 import type { RuntimeWorktreeLifecycleEvent } from '../runtime/workspaces/lifecycle/worktree-lifecycle-event'
 import { isRefOf } from '../../shared/connector-place-names'
@@ -8,6 +9,10 @@ import {
   onStructuredAgentSessionHostChanged
 } from '../native-chat/agent-session-wire/host/structured-agent-session-registry'
 import { SlackMirror } from './slack-mirror'
+import { connectorAskerImages } from './connector-asker-images'
+import { postConnectorAction } from '../connector-cloud/connector-actions'
+import { cloudConversation } from '../../shared/connectors/connector-cloud-contract'
+import { getAgentSessionAttachmentStore } from '../native-chat/agent-session-attachments/agent-session-attachment-store-registry'
 import type { SlackMirrorCloud } from './slack-mirror-cloud'
 import { DeliveryReceipts, type DeliveryReceiptDb } from './external-conversation-delivery-receipts'
 import { allLinks, type ExternalConversationLinkStore } from './external-conversation-links'
@@ -97,6 +102,35 @@ export function installExternalConversations(
       readHookRow: (paneKey) => runtime.agentTransitions.latestRow(paneKey),
       onAgentPaneChange: (listener) => runtime.agentTransitions.subscribe(listener),
       onLinked: () => runtime.onConversationLinked?.(),
+      // Through the cloud a bot's own `read --download` goes through, into the attachment store.
+      askerImages: connectorAskerImages({
+        read: async ({ botId, ref, fileId, conversation }, imageSignal) => {
+          const cloud = runtime.getConnectorCloud?.()
+          const about = cloudConversation(conversation)
+          // A cloud that can't stream a file leaves it to the agent's own download.
+          if (!cloud?.cloudFeatures()?.has('files.direct' satisfies ConnectorCloudFeature)) {
+            return null
+          }
+          return await postConnectorAction(
+            cloud,
+            {
+              botId,
+              verb: 'read',
+              ref,
+              args: { download: fileId, stream: true },
+              ...(about ? { conversation: about } : {})
+            },
+            imageSignal
+          )
+        },
+        store: async (name, bytes) => {
+          const attachments = getAgentSessionAttachmentStore()
+          if (!attachments) {
+            throw new Error('no attachment store')
+          }
+          return await attachments.storeFile(name, bytes)
+        }
+      }),
       // An older cloud without refs names no channel; the row then shows Slack's name.
       nameChannel: async (botId, channelId) => {
         const resolve = runtime.getConnectorCloud?.()?.refResolver()
@@ -140,7 +174,10 @@ export function installExternalConversations(
 /** The reply outbox's fill, boot recovery and watch (design item 125), for one enabled seam. */
 function connectorReplyOutbox(
   store: ExternalConversationLinkStore,
-  runtime: { getConnectorCloud?: () => { repliesFilled(): void } | null },
+  runtime: {
+    getConnectorCloud?: () => { repliesFilled(): void } | null
+    structuredAgentSessionLaunchContinuation?: { continued: Promise<unknown> }
+  },
   signal: AbortSignal
 ): { fill: ConversationReplyFill; admitted: (sessionId: string) => void } {
   const journal = () => getStructuredAgentSessionHost()?.deps.store.connectorReplies() ?? null
@@ -156,8 +193,13 @@ function connectorReplyOutbox(
     agentOf: (sessionId) =>
       [...allLinks(store)].find(({ link }) => link.sessionId === sessionId)?.link.agent ?? '',
     fillTurn: fill,
-    filled
+    filled,
+    // This start's own continuations of restart cuts claim first; whatever they left closes then.
+    ...(runtime.structuredAgentSessionLaunchContinuation
+      ? { continuationsSettled: runtime.structuredAgentSessionLaunchContinuation.continued }
+      : {})
   })
+  setConnectorClaimSource((sessionId, cut) => recovery.claimFor(sessionId, cut))
   const boot = () => {
     recovery.dispose()
     if (getStructuredAgentSessionHost()) {
@@ -167,6 +209,7 @@ function connectorReplyOutbox(
   const stop = onStructuredAgentSessionHostChanged(boot)
   signal.addEventListener('abort', () => {
     stop()
+    setConnectorClaimSource(null)
     recovery.dispose()
   })
   boot()
