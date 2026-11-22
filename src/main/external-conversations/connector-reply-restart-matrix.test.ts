@@ -2,6 +2,10 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type {
+  AgentJournalConnectorClaim,
+  AgentJournalConnectorDelivery
+} from '../../shared/agent-session/journal/agent-journal-bot-message-fields'
 import { agentJournalSubmissionKey } from '../../shared/agent-session/journal/agent-session-journal-item-key'
 import type {
   AgentJournalMessageItem,
@@ -14,23 +18,30 @@ import { ensureAgentSessionAttachmentClaimTables } from '../native-chat/agent-se
 import {
   cutJournalConnectorReplies,
   fillJournalConnectorReplies,
-  readJournalConnectorReplies,
   recutJournalConnectorReplies,
   releaseJournalConnectorClaim,
   sentJournalConnectorReplies
 } from '../native-chat/agent-session-journal/connector-replies/journal-connector-replies'
+import {
+  readJournalConnectorReplies,
+  readOwedJournalConnectorReplies
+} from '../native-chat/agent-session-journal/connector-replies/journal-connector-replies-read'
 import { readJournalDomainDispatchItem } from '../native-chat/agent-session-journal/journal-domain-dispatch-placement'
 import { migrateJournalDomainSchema } from '../native-chat/agent-session-journal/journal-domain-schema'
 import { applyJournalDomainSubmission } from '../native-chat/agent-session-journal/journal-domain-submission-admission'
 import Database from '../sqlite/sync-database'
 import type { ConnectorReplyCutJournal } from '../connector-cloud/connector-reply-outbox'
-import { conversationReplyFill } from './external-conversation-reply-fill'
+import { conversationReplyFill, journalAskedByOwner } from './external-conversation-reply-fill'
+import { readJournalDomainSubmissionBody } from '../native-chat/agent-session-journal/journal-domain-submission-records'
+import { applyJournalDomainQueueCommand } from '../native-chat/agent-session-journal/journal-domain-queue-command'
+import { usageLimitReplyPause } from './external-conversation-reply-pause'
 import { ConnectorReplyRecovery } from './external-conversation-reply-recovery'
 
 // Phase 1 restart matrix, desktop side: a real journal file reopened on every "restart", the real
 // admission writer, recovery and fill, a fake clock. Each case asserts the rows' durable outcome.
 
 const NOW = 1_800_000_000_000
+const LIMIT = { category: 'usage_limit' as const, usageLimit: { resetsAt: NOW + 3_600_000 } }
 const SLACK = { source: 'slack', externalId: 'slack:T1:C1:1.2' }
 const target = { sessionId: 'chat-1', epoch: 'e' }
 const facts = {
@@ -44,17 +55,27 @@ const facts = {
 }
 
 let dir = ''
+// Windows refuses to delete a directory whose SQLite file a connection still holds.
+const openedDatabases: Database[] = []
 beforeEach(() => {
   vi.useFakeTimers()
   dir = mkdtempSync(join(tmpdir(), 'orca-reply-matrix-'))
 })
 afterEach(() => {
   vi.useRealTimers()
+  for (const db of openedDatabases.splice(0)) {
+    try {
+      db.close()
+    } catch {
+      // Already closed by the case itself.
+    }
+  }
   rmSync(dir, { recursive: true, force: true })
 })
 
 function openJournal() {
   const db = new Database(join(dir, 'journal.db'))
+  openedDatabases.push(db)
   migrateJournalDomainSchema(db)
   ensureAgentSessionAttachmentClaimTables(db)
   db.prepare(
@@ -66,17 +87,25 @@ function openJournal() {
       readJournalConnectorReplies(db).filter(
         (row) => sessionId === undefined || row.sessionId === sessionId
       ),
+    readOwed: async (account, after, limit) =>
+      readOwedJournalConnectorReplies(db, account, after, limit),
     fillOutcomes: async (fills) => fillJournalConnectorReplies(db, fills, NOW) > 0,
     sent: async (keys) => sentJournalConnectorReplies(db, keys, NOW),
     cut: async (rows) => cutJournalConnectorReplies(db, rows) > 0,
-    recut: async (claim, cut) => recutJournalConnectorReplies(db, claim, cut) > 0,
+    recut: async (claim, cut, failure) => recutJournalConnectorReplies(db, claim, cut, failure) > 0,
     releaseClaim: async (claim) => releaseJournalConnectorClaim(db, claim) > 0
   }
   return { db, journal }
 }
 
 /** The journal writer's admission of one message, in its own transaction. */
-function admit(db: Database.Database, messageId: string, body: AgentJournalMessageItem): void {
+function admit(
+  db: Database.Database,
+  messageId: string,
+  body: AgentJournalMessageItem,
+  /** The queued card this send hands over, as a busy chat's delivery is sent. */
+  card?: string
+): void {
   db.exec('BEGIN IMMEDIATE')
   try {
     applyJournalDomainSubmission(
@@ -93,7 +122,8 @@ function admit(db: Database.Database, messageId: string, body: AgentJournalMessa
           handoverRecorded: true,
           origin: 'client',
           source: { kind: 'user' }
-        }
+        },
+        ...(card ? { consume: { messageId: card, expect: 'waiting' as const } } : {})
       },
       facts,
       NOW
@@ -117,8 +147,34 @@ const asked = (deliveryId: string, carried?: string[]): AgentJournalMessageItem 
   }
 })
 
+/** A delivery to a busy chat: queued as a card (its outbox row keeps the card's id). */
+function queue(db: Database.Database, cardId: string, body: AgentJournalMessageItem): void {
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    applyJournalDomainQueueCommand(
+      db,
+      dir,
+      target,
+      { kind: 'queue-insert', input: { messageId: cardId, body } },
+      NOW
+    )
+    db.exec('COMMIT')
+  } catch (error) {
+    db.exec('ROLLBACK')
+    throw error
+  }
+}
+
 /** One process: the journal reopened, its recovery over the items the test says the chat holds. */
-function start(options: { continuationsSettled?: Promise<unknown> } = {}) {
+function start(
+  options: {
+    continuationsSettled?: Promise<unknown>
+    usageLimitDisposition?: (sessionId: string, turnItemId: string) => Promise<string>
+    /** A bot's chat: its quiet marker counts. */
+    bot?: boolean
+  } = {}
+) {
+  const { bot = false, ...recoveryOptions } = options
   const { db, journal } = openJournal()
   let items: AgentJournalRenderItem[] = []
   let submissions: AgentJournalSubmission[] = []
@@ -140,18 +196,24 @@ function start(options: { continuationsSettled?: Promise<unknown> } = {}) {
   }
   const fill = conversationReplyFill(
     () => journal,
-    () => {}
+    () => {},
+    usageLimitReplyPause(() => journal, options.usageLimitDisposition ?? (async () => 'ended')),
+    // The production adapter over the journal's own submission-body read.
+    journalAskedByOwner(async () => ({
+      submissionBody: async (messageId, read) =>
+        readJournalDomainSubmissionBody(db, target, messageId, read?.family)
+    }))
   )
   const recovery = new ConnectorReplyRecovery({
     journal: () => journal,
     // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: recovery calls only these chat members.
     chat: () => chat as never,
     hasSession: () => true,
-    isBot: () => false,
+    isBot: () => bot,
     agentOf: () => 'claude',
     fillTurn: fill,
     filled: () => {},
-    ...options
+    ...recoveryOptions
   })
   const message = (messageId: string) =>
     readJournalDomainDispatchItem(db, target, agentJournalSubmissionKey(messageId))!.item
@@ -159,7 +221,8 @@ function start(options: { continuationsSettled?: Promise<unknown> } = {}) {
   const turn = (
     key: string,
     openerId: string,
-    state: AgentJournalTurnLifecycleState,
+    // `failed`: completed with a failure, as a usage limit ends a turn.
+    ended: AgentJournalTurnLifecycleState | 'failed',
     prose?: string
   ): AgentJournalRenderItem[] => {
     const opener = message(openerId)
@@ -189,8 +252,9 @@ function start(options: { continuationsSettled?: Promise<unknown> } = {}) {
         body: {
           kind: 'turn',
           turnId: `provider-${key}`,
-          state,
-          ...(state === 'completed' ? { outcome: 'success' as const } : {}),
+          state: ended === 'failed' ? ('completed' as const) : ended,
+          ...(ended === 'completed' ? { outcome: 'success' as const } : {}),
+          ...(ended === 'failed' ? { outcome: 'failure' as const } : {}),
           userItemId: opener.itemId
         }
       }
@@ -216,7 +280,31 @@ function start(options: { continuationsSettled?: Promise<unknown> } = {}) {
     observers.forEach((observer) => observer())
     await vi.advanceTimersByTimeAsync(2_000)
   }
-  return { db, journal, recovery, message, turn, show, outcomes, publish, items: () => items }
+  // A live end of a turn the usage limit stopped, as the turn-end watch fills it.
+  const limited = (turnItemId: string, openerId: string, stamps: AgentJournalConnectorDelivery[]) =>
+    fill({
+      sessionId: 'chat-1',
+      turnItemId,
+      stamps,
+      openerItemId: agentJournalSubmissionKey(openerId),
+      outcome: 'failure',
+      prose: '',
+      bot: false,
+      links: [],
+      failure: LIMIT
+    })
+  return {
+    db,
+    journal,
+    recovery,
+    message,
+    turn,
+    show,
+    outcomes,
+    publish,
+    limited,
+    items: () => items
+  }
 }
 
 describe('a restart cut, continued at launch', () => {
@@ -404,22 +492,277 @@ describe('a restart cut, continued at launch', () => {
   })
 })
 
-describe('no positional "answered together"', () => {
-  it('tells an unconfirmed end for a delivered send no turn proves it took, never unattributed', async () => {
-    const p = start({ continuationsSettled: Promise.resolve() })
-    admit(p.db, 'm1', asked('d1'))
-    admit(p.db, 'other', {
-      kind: 'message',
-      role: 'user',
-      blocks: [{ type: 'text', text: 'unrelated' }]
+describe('a usage-limit pause', () => {
+  const continueBody = (claim: AgentJournalConnectorClaim): AgentJournalMessageItem => ({
+    kind: 'message',
+    role: 'user',
+    blocks: [{ type: 'text', text: 'Continue.' }],
+    connectorClaim: claim
+  })
+
+  it('pauses the request while its continue is pending, and the continue answers it', async () => {
+    const p = start({
+      continuationsSettled: Promise.resolve(),
+      usageLimitDisposition: async () => 'pending'
     })
-    p.show([p.message('m1'), ...p.turn('item:t1', 'other', 'completed', 'Unrelated answer.')])
+    admit(p.db, 'm1', asked('d1'))
+    p.show([p.message('m1'), ...p.turn('item:t1', 'm1', 'failed')])
+    const ended = await p.limited('item:t1', 'm1', [stampOf('d1')])
+    expect(ended.paused).toBe(true)
+    await p.recovery.boot()
+    expect(p.outcomes()).toEqual({ d1: { outcome: null } })
+    const claim = await p.recovery.claimFor('chat-1', { turnId: 'item:t1', kind: 'usage_limit' })
+    expect(claim?.origin.map((stamp) => stamp.deliveryId)).toEqual(['d1'])
+    admit(p.db, 'c1', continueBody(claim!))
+    p.show([...p.items(), p.message('c1'), ...p.turn('item:t2', 'c1', 'completed', 'Back on it.')])
+    await p.recovery.boot()
+    expect(p.outcomes()).toEqual({ d1: { outcome: 'answered', prose: 'Back on it.', head: 'd1' } })
+  })
+
+  it('fails the request with the limit it hit once no continue will come', async () => {
+    let disposition = 'pending'
+    const p = start({
+      continuationsSettled: Promise.resolve(),
+      usageLimitDisposition: async () => disposition
+    })
+    admit(p.db, 'm1', asked('d1'))
+    p.show([p.message('m1'), ...p.turn('item:t1', 'm1', 'failed')])
+    await p.limited('item:t1', 'm1', [stampOf('d1')])
+    await p.recovery.boot()
+    expect(p.outcomes()).toEqual({ d1: { outcome: null } })
+    // The person cancelled the automatic continue: no journal change, only the chat's status.
+    disposition = 'ended'
+    p.recovery.statusChanged('chat-1')
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(p.outcomes()).toEqual({
+      d1: { outcome: 'failed', head: 'd1', category: 'usage_limit' }
+    })
+  })
+
+  it('fails the request when the continue’s send went unconfirmed and it never claimed (U4)', async () => {
+    const p = start({
+      continuationsSettled: Promise.resolve(),
+      usageLimitDisposition: async () => 'ambiguous'
+    })
+    admit(p.db, 'm1', asked('d1'))
+    p.show([p.message('m1'), ...p.turn('item:t1', 'm1', 'failed')])
+    await p.journal.cut({
+      keys: [{ account: 'account-a', deliveryId: 'd1' }],
+      cut: { turnId: 'item:t1', kind: 'usage_limit' },
+      failure: LIMIT
+    })
+    await p.recovery.boot()
+    expect(p.outcomes()).toEqual({
+      d1: { outcome: 'failed', head: 'd1', category: 'usage_limit' }
+    })
+  })
+
+  it('cuts a restart continuation’s claim again when its own turn hits the limit (A12)', async () => {
+    const p = start({
+      continuationsSettled: Promise.resolve(),
+      usageLimitDisposition: async () => 'pending'
+    })
+    admit(p.db, 'm1', asked('d1'))
+    p.show([p.message('m1'), ...p.turn('item:t1', 'm1', 'interrupted')])
+    const restart = await p.recovery.claimFor('chat-1', {
+      turnId: 'provider-item:t1',
+      kind: 'restart'
+    })
+    admit(p.db, 'c1', continueBody(restart!))
+    p.show([...p.items(), p.message('c1'), ...p.turn('item:t2', 'c1', 'failed')])
+    await p.limited('item:t2', 'c1', restart!.origin)
+    const resume = await p.recovery.claimFor('chat-1', { turnId: 'item:t2', kind: 'usage_limit' })
+    expect(resume).toMatchObject({ cutKind: 'usage_limit', origin: [{ deliveryId: 'd1' }] })
+    admit(p.db, 'c2', continueBody(resume!))
+    p.show([...p.items(), p.message('c2'), ...p.turn('item:t3', 'c2', 'completed', 'Resumed.')])
+    await p.recovery.boot()
+    expect(p.outcomes()).toEqual({ d1: { outcome: 'answered', prose: 'Resumed.', head: 'd1' } })
+  })
+})
+
+describe('a bot’s answer to its owner’s DM across a pause or a restart', () => {
+  const DM = { source: 'slack', externalId: 'T1:D0OWNER:D0OWNER:U9' }
+  const dmAsked = (deliveryId: string, role: 'owner' | 'member'): AgentJournalMessageItem => ({
+    kind: 'message',
+    role: 'user',
+    blocks: [{ type: 'text', text: 'fix it' }],
+    origin: 'connector',
+    asker: {
+      source: 'slack',
+      userId: role === 'owner' ? 'U0OWNER' : 'U0MEMBER',
+      role,
+      place: { kind: 'direct_message', id: 'D0OWNER' }
+    },
+    connectorDelivery: { account: 'account-a', conversation: DM, deliveryId }
+  })
+  const continued = (claim: AgentJournalConnectorClaim): AgentJournalMessageItem => ({
+    kind: 'message',
+    role: 'user',
+    blocks: [{ type: 'text', text: 'Continue.' }],
+    connectorClaim: claim
+  })
+  // The DM asks, the usage limit pauses it, and the automatic continue answers with `prose`.
+  const pausedThenContinued = async (role: 'owner' | 'member', prose: string) => {
+    const p = start({
+      bot: true,
+      continuationsSettled: Promise.resolve(),
+      usageLimitDisposition: async () => 'pending'
+    })
+    admit(p.db, 'm1', dmAsked('d1', role))
+    p.show([p.message('m1'), ...p.turn('item:t1', 'm1', 'failed')])
+    const stamp = { account: 'account-a', conversation: DM, deliveryId: 'd1' }
+    expect((await p.limited('item:t1', 'm1', [stamp])).paused).toBe(true)
+    const claim = await p.recovery.claimFor('chat-1', { turnId: 'item:t1', kind: 'usage_limit' })
+    admit(p.db, 'c1', continued(claim!))
+    p.show([...p.items(), p.message('c1'), ...p.turn('item:t2', 'c1', 'completed', prose)])
+    await p.recovery.boot()
+    return p.outcomes()
+  }
+
+  it('posts the words the continue wrote before its marker, once, when the owner asked', async () => {
+    expect(await pausedThenContinued('owner', 'Both fixes landed.\n\nNO_REPLY')).toEqual({
+      d1: { outcome: 'answered', prose: 'Both fixes landed.', head: 'd1' }
+    })
+  })
+
+  it('keeps a continue that wrote only the marker quiet', async () => {
+    expect(await pausedThenContinued('owner', 'NO_REPLY')).toEqual({
+      d1: { outcome: 'quiet', head: 'd1' }
+    })
+  })
+
+  it('keeps a member’s DM quiet through the pause, as before', async () => {
+    expect(await pausedThenContinued('member', 'Owner-only note.\n\nNO_REPLY')).toEqual({
+      d1: { outcome: 'quiet', head: 'd1' }
+    })
+  })
+
+  // The DM arrives while the bot is busy: a card, handed over later as its own send.
+  const queuedThenPaused = async (role: 'owner' | 'member') => {
+    const p = start({
+      bot: true,
+      continuationsSettled: Promise.resolve(),
+      usageLimitDisposition: async () => 'pending'
+    })
+    queue(p.db, 'q1', dmAsked('d1', role))
+    admit(p.db, 's1', dmAsked('d1', role), 'q1')
+    p.show([p.message('s1'), ...p.turn('item:t1', 's1', 'failed')])
+    const stamp = { account: 'account-a', conversation: DM, deliveryId: 'd1' }
+    expect((await p.limited('item:t1', 's1', [stamp])).paused).toBe(true)
+    const claim = await p.recovery.claimFor('chat-1', { turnId: 'item:t1', kind: 'usage_limit' })
+    admit(p.db, 'c1', continued(claim!))
+    p.show([
+      ...p.items(),
+      p.message('c1'),
+      ...p.turn('item:t2', 'c1', 'completed', 'Both fixes landed.\n\nNO_REPLY')
+    ])
+    await p.recovery.boot()
+    return p.outcomes()
+  }
+
+  it('posts the words for a DM the owner sent while the bot was busy (a queued card)', async () => {
+    expect(await queuedThenPaused('owner')).toEqual({
+      d1: { outcome: 'answered', prose: 'Both fixes landed.', head: 'd1' }
+    })
+  })
+
+  it('keeps a member’s queued DM quiet', async () => {
+    expect(await queuedThenPaused('member')).toEqual({ d1: { outcome: 'quiet', head: 'd1' } })
+  })
+
+  it('posts the owner’s answer from a restart continuation after the journal reopened', async () => {
+    const launch = Promise.withResolvers<void>()
+    const before = start({ bot: true })
+    admit(before.db, 'm1', dmAsked('d1', 'owner'))
+    before.db.close()
+    const p = start({ bot: true, continuationsSettled: launch.promise })
+    p.show([p.message('m1'), ...p.turn('item:t1', 'm1', 'interrupted')])
+    await p.recovery.boot()
+    const claim = await p.recovery.claimFor('chat-1', {
+      turnId: 'provider-item:t1',
+      kind: 'restart'
+    })
+    admit(p.db, 'c1', continued(claim!))
+    p.show([
+      ...p.items(),
+      p.message('c1'),
+      ...p.turn('item:t2', 'c1', 'completed', 'Picked it back up.\n\nNO_REPLY')
+    ])
+    launch.resolve()
+    await p.publish()
+    expect(p.outcomes()).toEqual({
+      d1: { outcome: 'answered', prose: 'Picked it back up.', head: 'd1' }
+    })
+  })
+})
+
+describe('no positional "answered together" across a restart', () => {
+  const unrelated: AgentJournalMessageItem = {
+    kind: 'message',
+    role: 'user',
+    blocks: [{ type: 'text', text: 'unrelated' }]
+  }
+
+  it('tells an unconfirmed end for a send an earlier process accepted that no turn proves it took', async () => {
+    vi.setSystemTime(NOW)
+    const before = start()
+    admit(before.db, 'm1', asked('d1'))
+    before.db.close()
+    vi.setSystemTime(NOW + 60_000)
+    const p = start({ continuationsSettled: Promise.resolve() })
+    admit(p.db, 'other', unrelated)
+    p.show(
+      [p.message('m1'), ...p.turn('item:t1', 'other', 'completed', 'Unrelated answer.')],
+      [submissionOf('m1', { submittedAt: NOW })]
+    )
     await p.recovery.boot()
     expect(p.outcomes()).toEqual({
       d1: { outcome: 'interrupted', head: 'd1', category: 'unconfirmed' }
     })
   })
+
+  it('answers together a follow-up sent into a running turn once a later turn ends', async () => {
+    vi.setSystemTime(NOW - 60_000)
+    const p = start()
+    admit(p.db, 'm0', asked('d0'))
+    admit(p.db, 'm1', asked('d1'))
+    p.recovery.admitted('chat-1')
+    const first = [p.message('m0'), ...p.turn('item:t1', 'm0', 'completed', 'First answer.')]
+    const sends = [
+      submissionOf('m0', { submittedAt: NOW }),
+      submissionOf('m1', { submittedAt: NOW })
+    ]
+    p.show([...first, p.message('m1')], sends)
+    p.recovery.turnEnded('chat-1')
+    await p.publish()
+    // Orchestration mail wakes a later turn after the follow-up, and it ends.
+    admit(p.db, 'mail', unrelated)
+    p.show(
+      [...p.items(), p.message('mail'), ...p.turn('item:t2', 'mail', 'completed', 'Mail.')],
+      [...sends, submissionOf('mail', { submittedAt: NOW })]
+    )
+    p.recovery.turnEnded('chat-1')
+    await p.publish()
+    expect(p.outcomes().d1).toEqual({ outcome: 'unattributed', head: 'd1' })
+  })
+
+  it('leaves a send still queued for handover owed when an unrelated turn ends', async () => {
+    vi.setSystemTime(NOW - 60_000)
+    const p = start({ continuationsSettled: Promise.resolve() })
+    admit(p.db, 'm1', asked('d1'))
+    admit(p.db, 'other', unrelated)
+    p.show(
+      [p.message('m1'), ...p.turn('item:t1', 'other', 'completed', 'Unrelated answer.')],
+      [submissionOf('m1', { dispatchState: 'pending', submittedAt: NOW, handoverRecorded: true })]
+    )
+    await p.recovery.boot()
+    expect(p.outcomes()).toEqual({ d1: { outcome: null } })
+  })
 })
+
+function stampOf(deliveryId: string): AgentJournalConnectorDelivery {
+  return { account: 'account-a', conversation: SLACK, deliveryId }
+}
 
 function submissionOf(
   messageId: string,

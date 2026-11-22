@@ -233,18 +233,28 @@ export function rowVerdict(
     cut: readonly AgentJournalConnectorDelivery[]
     unresolved: readonly AgentJournalConnectorDelivery[]
     settled: boolean
+    /** Usage-limit cuts whose scheduler will send no continue (disposition ended). */
+    endedCuts: ReadonlySet<string>
     idle: boolean
     lastEnded: number
+    /** When this host process started: a send accepted before it was cut off by a restart. */
+    startedAt: number
     rejectionOf: (submission: AgentJournalSubmission) => { failure?: ConnectorFailure }
   }
 ): ReplyRecoveryVerdict | null {
-  const { view, cut, unresolved, settled, idle, lastEnded, rejectionOf } = facts
+  const { view, cut, unresolved, settled, endedCuts, idle, lastEnded, startedAt, rejectionOf } =
+    facts
   if (row.claimMessageId !== undefined) {
     return settled ? view.claimVerdict(row.claimMessageId) : null
   }
+  if (row.cut?.kind === 'usage_limit') {
+    // Its scheduler's to close: once no continue will come, it fails with the limit it hit.
+    return endedCuts.has(row.cut.turnId)
+      ? { outcome: 'failed', ...(row.cutFailure ? { failure: row.cutFailure } : {}) }
+      : null
+  }
   if (row.cut) {
-    // A usage-limit cut is its scheduler's to close.
-    return settled && row.cut.kind === 'restart' ? { outcome: 'interrupted' } : null
+    return settled ? { outcome: 'interrupted' } : null
   }
   if (names(cut)(row)) {
     return settled ? { outcome: 'interrupted' } : null
@@ -265,10 +275,15 @@ export function rowVerdict(
       return { outcome: 'interrupted' }
     }
   }
-  // Delivered, no turn proves it took it, and a turn after it ended with the chat idle: the
-  // machine lost track of it. Never "answered together" on position alone.
+  // Delivered, no turn proves it took it, and a turn after it ended with the chat idle. Accepted
+  // before a restart: the machine lost track of it. Accepted in this process: a send handed into
+  // a running turn (Claude records no steer), answered together with it. Still queued: owed.
   const at = view.messageOf(row)?.sequence ?? 0
-  return settled && idle && at > 0 && at < lastEnded
+  const queued = submission?.handoverRecorded === true && submission.handedOverAt === undefined
+  if (queued || !(settled && idle && at > 0 && at < lastEnded)) {
+    return null
+  }
+  return (submission?.submittedAt ?? 0) < startedAt
     ? { outcome: 'interrupted', failure: UNCONFIRMED }
-    : null
+    : { outcome: 'unattributed' }
 }
