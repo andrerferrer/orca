@@ -103,7 +103,8 @@ function createSupervisor(
   onLog: ConnectionLogSink
 ): MobileEndpointSupervisor {
   return new MobileEndpointSupervisor(logical, host.id, relay, {
-    openDirect: () => connect(host.endpoint, host.deviceToken, host.publicKeyB64, { onLog }),
+    openDirect: () =>
+      connect(host.endpoint, host.deviceToken, host.publicKeyB64, { onLog, hostId: host.id }),
     directPath: directPathForEndpoint(host.endpoint),
     directProbeTimeoutMs: directProbeTimeoutMsForEndpoint(host.endpoint),
     directUnavailable: skipsDirectEndpoint(host),
@@ -116,7 +117,8 @@ function createSupervisor(
         deviceToken: host.deviceToken,
         desktopPublicKeyB64: host.publicKeyB64,
         onHostCloseReason,
-        onLog
+        onLog,
+        hostId: host.id
       }),
     resolveRelay: resolveMobileRelayEndpoint,
     readBundle: readMobileRelayCredentialBundle,
